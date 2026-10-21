@@ -60,6 +60,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the real pool and escrow, including installments and large-value overflow
   regression coverage (#948)
 
+- `pool`: cover the refund-transfer failure path of
+  `receive_repayment_with_refund` with a token stub that fails *after*
+  applying its balance moves, proving the settlement accounting
+  (`TotalDeposits`, `TotalFunded`, `ActiveInvoiceCount`, the `FundedInvoice`
+  entry) and the buyer's balance are rolled back together with the failed
+  transfer, so a failed refund cannot leave a partially settled invoice (#968)
+
 - `pool.deposit` gained regression coverage pinning the behaviour the
   internal `mint` helper refactor relies on: the `lp_deposited` event
   payload is unchanged and `TotalShares` stays in step with LP balances
