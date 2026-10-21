@@ -20,8 +20,8 @@ use crate::{
         MAX_BATCH_SIZE, MAX_PROTOCOL_FEE_BPS, SUGGESTED_DISCOUNT_CEILING_BPS,
         SUGGESTED_DISCOUNT_FLOOR_BPS,
     },
-    DataKey, PoolContract, PoolContractClient, DEFAULT_MIN_INITIAL_DEPOSIT, DEFAULT_SHARE_DECIMALS,
-    TTL_EXTEND_TO, TTL_THRESHOLD,
+    DataKey, PoolContract, PoolContractClient, PoolError, DEFAULT_MIN_INITIAL_DEPOSIT,
+    DEFAULT_SHARE_DECIMALS, TTL_EXTEND_TO, TTL_THRESHOLD,
 };
 
 use trusttrove_escrow::{EscrowContract as RealEscrow, EscrowContractClient as RealEscrowClient};
@@ -1520,6 +1520,63 @@ fn test_get_lp_position_rejects_share_price_overflow() {
     });
 
     let _ = te.pool.get_lp_position(&te.lp);
+}
+
+// Regression test for the public view boundary: a corrupted pool state that
+// pushes `lp_shares * total_deposits` past `u128::MAX` must fail with the
+// typed `PoolError::Overflow` (#13), not with a wrapped-around position value.
+//
+// Unlike the test above (which inflates only `TotalDeposits` on top of a real
+// deposit), this one seeds total shares, total deposits and the LP's own share
+// balance explicitly, so the multiplication overflows purely from the seeded
+// state. It also checks that the failed read leaves the pool state untouched:
+// `get_lp_position` is a view, so an overflow must not corrupt anything.
+#[test]
+fn test_get_lp_position_seeded_overflow_returns_typed_error() {
+    let te = setup();
+
+    // lp_shares * total_deposits = u128::MAX * u128::MAX overflows u128.
+    let lp_shares: u128 = u128::MAX;
+    let total_shares: u128 = u128::MAX;
+    let total_deposits: u128 = u128::MAX;
+
+    te.env.as_contract(&te.pool_id, || {
+        te.env
+            .storage()
+            .persistent()
+            .set(&DataKey::LPShares(te.lp.clone()), &lp_shares);
+        te.env
+            .storage()
+            .instance()
+            .set(&DataKey::TotalShares, &total_shares);
+        te.env
+            .storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &total_deposits);
+    });
+
+    // The view must fail with the typed overflow error.
+    match te.pool.try_get_lp_position(&te.lp) {
+        Err(Ok(err)) => assert_eq!(
+            err,
+            soroban_sdk::Error::from(PoolError::Overflow),
+            "get_lp_position must fail with the typed Overflow error"
+        ),
+        _ => panic!("get_lp_position must fail with the typed Overflow error"),
+    }
+
+    // The failed read must not have changed any state.
+    let shares_after: u128 = te.env.as_contract(&te.pool_id, || {
+        te.env
+            .storage()
+            .persistent()
+            .get(&DataKey::LPShares(te.lp.clone()))
+            .unwrap()
+    });
+    assert_eq!(shares_after, lp_shares);
+    let stats = te.pool.get_stats();
+    assert_eq!(stats.total_shares, total_shares);
+    assert_eq!(stats.total_deposits, total_deposits);
 }
 
 //  LP POSITION TESTS
